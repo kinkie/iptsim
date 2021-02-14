@@ -40,11 +40,6 @@ class lineparser(ArgumentParser):
         self.add_argument('--tcp-flags', nargs='*', type=str)
         self.add_argument('--clamp-mss-to-pmtu', action='store_true')
 
-def parse_args() :
-    global VERSION
-    parser = argsparser()
-    return parser.parse_args()
-
 class rule:
     # atts: raw, in_intf, action
     def __init__(line):
@@ -100,7 +95,8 @@ def parse_rules(filename):
     pprint.pprint(tables)
 
 def main():
-    args = parse_args()
+    parser = argsparser()
+    args = parser.parse_args()
     print(f'parsed: {args}')
     parse_rules(args.file[0])
     return 0
