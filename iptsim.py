@@ -41,16 +41,31 @@ class lineparser(ArgumentParser):
         self.add_argument('--clamp-mss-to-pmtu', action='store_true')
 
 class rule:
+    def set_spec(self, spec, attrname, arg):
+        self.__setattr__(attrname, None)
+        if arg in spec and spec[arg] and len(spec[arg]):
+            self.__setattr__(attrname, spec[arg][0])
+            
+
     # atts: raw, lineno, action, rulespec(hash of declaration)
     def __init__(self, rawline, parsedline, lineno):
-        self.raw = rawline
-        self.action = parsedline.j;
-        self.spec = vars(parsedline)
         self.lineno = lineno
-        self.chain = self.spec['A'][0]
+        self.raw = rawline
+        spec = vars(parsedline)
+        self.spec = spec
+        self.set_spec(spec, 'action', 'j')
+        self.set_spec(spec, 'chain', 'A')
+        self.set_spec(spec, 'in_intf', 'i')
+        self.set_spec(spec, 'out_intf', 'o')
+        self.set_spec(spec, 'src', 's')
+        self.set_spec(spec, 'dst', 'd')
+        self.set_spec(spec, 'proto', 'p')
+        self.set_spec(spec, 'dport', 'dport')
+        self.set_spec(spec, 'dnat_to_dest', 'to-destination')
+        self.set_spec(spec, 'tcp_flags', 'tcp-flags')
     
     def __repr__(self):
-        return f'rule[line={self.lineno}, action={self.action}]'
+        return f'rule[{self.lineno}: {self.chain}, {self.src}->{self.dst}, {self.action}]'
 
 
 class chain:
