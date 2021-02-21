@@ -41,31 +41,23 @@ class lineparser(ArgumentParser):
         self.add_argument('--clamp-mss-to-pmtu', action='store_true')
 
 class rule:
-    def set_spec(self, spec, attrname, arg):
-        self.__setattr__(attrname, None)
-        if arg in spec and spec[arg] and len(spec[arg]):
-            self.__setattr__(attrname, spec[arg][0])
-            
+    def __getattr__(self, name: str):
+        if name in self.spec:
+            return self.spec[name]
+        return None            
 
     # atts: raw, lineno, action, rulespec(hash of declaration)
     def __init__(self, rawline, parsedline, lineno):
         self.lineno = lineno
         self.raw = rawline
         spec = vars(parsedline)
+        for i in spec:
+            if isinstance(spec[i], list) and len(spec[i]) == 1:
+                spec[i] = spec[i][0]
         self.spec = spec
-        self.set_spec(spec, 'action', 'j')
-        self.set_spec(spec, 'chain', 'A')
-        self.set_spec(spec, 'in_intf', 'i')
-        self.set_spec(spec, 'out_intf', 'o')
-        self.set_spec(spec, 'src', 's')
-        self.set_spec(spec, 'dst', 'd')
-        self.set_spec(spec, 'proto', 'p')
-        self.set_spec(spec, 'dport', 'dport')
-        self.set_spec(spec, 'dnat_to_dest', 'to-destination')
-        self.set_spec(spec, 'tcp_flags', 'tcp-flags')
     
     def __repr__(self):
-        return f'rule[{self.lineno}: {self.chain}, {self.src}->{self.dst}, {self.action}]'
+        return f'rule[{self.lineno}: {self.spec}]'
 
 
 class chain:
@@ -88,7 +80,6 @@ class chain:
 # { tablename : { chainname : instanceof(chain) } }
 def parse_rules(filename):
     "returns an internal representation of iptables"
-    # print(f'parse_rules({filename})')
     tables={}
     lp = lineparser()
     with open(filename, 'r') as rulefile:
@@ -97,30 +88,24 @@ def parse_rules(filename):
         for line in rulefile:
             lineno = lineno + 1
             line = line[0:-1]
-            # print(f'line: {line}')
             if line[0] == '*':  # define a new table and switch to it
                 table = line[1:]
-                # print(f'new table: {table}')
                 tables[table] = {}
                 continue
             if line[0] == ':':  # new chain with default rule
                 (name, action, rest) = line[1:].split(' ')
-                # print(f'new chain {name}, action {action}')
                 tables[table].update( {name: chain(name,action)} )
                 continue
             if line[0] == '-':  # new rule in chain
                 words = shlex.split(line)
-                # print(f'new rule: {words}')
                 rulespec = rule(line, lp.parse_args(words), lineno)
-                # print(f'rulespec: {rulespec}')
-                tables[table][rulespec.chain].add_rule(rulespec)
+                tables[table][rulespec.A].add_rule(rulespec)
                 continue
     pprint.pprint(tables)
 
 def main():
     parser = argsparser()
     args = parser.parse_args()
-    # print(f'parsed: {args}')
     parse_rules(args.file[0])
     return 0
 
