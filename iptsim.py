@@ -11,7 +11,7 @@ version 3 or later. See the file LICENSE for details.
 """
 
 from argparse import ArgumentParser
-import json
+import ipaddress
 import pprint
 import shlex
 import sys
@@ -20,9 +20,21 @@ class argsparser(ArgumentParser):
     def __init__(self):
         super().__init__(description=help, prog="iptsim")
         self.add_argument('--version', action='version', version='%(prog)s 0.1')
-        self.add_argument('--file', '-f', nargs=1, type=str, action='store',
+        self.add_argument('--file', '-f', type=str, action='store',
             required=True,
             help='File containing the ruleset from iptables-save')
+        self.add_argument('--src', '-s', type=str, required=True,
+            help='Source address of the test packet')
+        self.add_argument('--dst', '-d', type=str, required=True,
+            help='Destination address of the test packet')
+        self.add_argument('--proto', '-p', type=str,
+            help='Protocol (tcp, udp, ...)')
+        self.add_argument('--dport', type=int,
+            help='destination port. If proto is tcp or udp, one of sport or dport is required')
+        self.add_argument('--sport', type=int,
+            help='destination port. If proto is tcp or udp, one of sport or dport is required')
+        self.add_argument('--myip', type=str, action='append',
+            help='Local address. May be used more than once')
 
 class lineparser(ArgumentParser):
     def __init__(self):
@@ -34,11 +46,18 @@ class lineparser(ArgumentParser):
             '--limit-burst', '--icmp-type', 
             ]
         for letter in letter_args:
-            self.add_argument(f"-{letter}", nargs=1, type=str)
+            self.add_argument(f"-{letter}", type=str)
         for arg in long_args:
-            self.add_argument(arg, nargs=1, type=str)
+            self.add_argument(arg, type=str)
         self.add_argument('--tcp-flags', nargs='*', type=str)
         self.add_argument('--clamp-mss-to-pmtu', action='store_true')
+
+
+class packet:
+    def __init__(self, argspec):
+        self.src = ipaddress.ip_address(argspec.src)
+        self.dst = ipaddress.ip_address(argspec.dst)
+
 
 class rule:
     def __getattr__(self, name: str):
@@ -51,20 +70,49 @@ class rule:
         self.lineno = lineno
         self.raw = rawline
         spec = vars(parsedline)
-        for i in spec:
-            if isinstance(spec[i], list) and len(spec[i]) == 1:
-                spec[i] = spec[i][0]
+        if spec['s']:
+            spec['src'] = ipaddress.ip_network(spec['s'])
+        if spec['d']:
+            spec['dst'] = ipaddress.ip_network(spec['d'])
         self.spec = spec
     
     def __repr__(self):
         return f'rule[{self.lineno}: {self.spec}]'
+    
+    # override this in subclasses to perform actions
+    # will be invoked if src/dst matches
+    #  Returns None or "-" if no action no match
+    #  returns self.j if another chain or final action needs to happen
+    #  can modify self e.g. for SNAT, DNAT, etc.
+    def act(self, pkt: packet):
+        return self.j
 
+    def match(self, pkt: packet) -> str:
+        print(f'matching {pkt.src},{pkt.dst} in {self.lineno}')
+        if self.src and pkt.src and pkt.src not in self.src:
+            return None
+        if self.dst and pkt.dst and pkt.dst not in self.dst:
+            return None
+        # TODO: add more conditions
+        print(f'*** hit in {self.lineno} -> {self.raw}')
+        return self.act(pkt)
+
+class rule_snat(rule):
+    def act(self, pkt: packet):
+        pkt.s = self.to_source
+        pkt.__init__() # reinit cache
+
+class rule_dnat(rule):
+    def act(self, pkt: packet):
+        pkt.d = self.to_destination
+        pkt.__init__() # reinit cache    
 
 class chain:
-    def __init__(self, name, action):
-        self.name=name
-        self.action=action # one of 'ACCEPT', 'REJECT', '-'
-        self.rules=[]
+    def __init__(self, table, name, action):
+        self.table = table
+        self.name = name
+        self.action = action # one of 'ACCEPT', 'REJECT', '-'
+        self.rules = []
 
     def add_rule(self, rulespec: rule):
         self.rules.append(rulespec)
@@ -75,6 +123,23 @@ class chain:
     def __repr__(self):
         return str(self)
 
+    def match(self, packet: packet) -> str:
+        for rule in self.rules:
+            r = rule.match(packet)
+            if r:
+                return r
+
+    def _walk(self, tables, pkt) -> str or None:
+        t = self.match(pkt)
+        if t in {'ACCEPT', 'REJECT', 'DROP', 'MASQUERADE', 'TCPMSS', None}:
+            return t
+        print(f'recursing into {self.table}.{t}')
+        return tables[self.table][t]._walk(tables, pkt)
+    
+    def walk(self, tables, pkt) -> str:
+        r = self._walk(tables, pkt)
+        if r is None:
+            return self.action
 
 # representation of iptables is:
 # { tablename : { chainname : instanceof(chain) } }
@@ -94,7 +159,7 @@ def parse_rules(filename):
                 continue
             if line[0] == ':':  # new chain with default rule
                 (name, action, rest) = line[1:].split(' ')
-                tables[table].update( {name: chain(name,action)} )
+                tables[table].update( {name: chain(table, name, action)} )
                 continue
             if line[0] == '-':  # new rule in chain
                 words = shlex.split(line)
@@ -102,11 +167,39 @@ def parse_rules(filename):
                 tables[table][rulespec.A].add_rule(rulespec)
                 continue
     pprint.pprint(tables)
+    return tables
+
+        
 
 def main():
     parser = argsparser()
     args = parser.parse_args()
-    parse_rules(args.file[0])
+    tables = parse_rules(args.file)
+    pkt = packet(args)
+    print("**** match **** ")
+    print(f'myip: {args.myip}')
+    # locally-originated packet
+    if args.myip and len(args.myip) and pkt.src in args.myip:
+        print(tables['mangle']['OUTPUT'].walk(tables, pkt))
+        print(tables['nat']['OUTPUT'].walk(tables, pkt))
+        print(tables['filter']['OUTPUT'].walk(tables, pkt))
+        print(tables['mangle']['POSTROUTING'].walk(tables, pkt))
+        print(tables['nat']['POSTROUTING'].walk(tables, pkt))
+        return 0
+    # packet to this host
+    if args.myip and len(args.myip) and pkt.dst in args.myip:
+        print(tables['mangle']['PREROUTING'].walk(tables, pkt))
+        print(tables['nat']['PREROUTING'].walk(tables, pkt))
+        print(tables['mangle']['INPUT'].walk(tables, pkt))
+        print(tables['filter']['INPUT'].walk(tables, pkt))
+        return 0
+    # forwarded packets
+    print(tables['mangle']['PREROUTING'].walk(tables, pkt))
+    print(tables['nat']['PREROUTING'].walk(tables, pkt))
+    print(tables['mangle']['FORWARD'].walk(tables, pkt))
+    print(tables['filter']['FORWARD'].walk(tables, pkt))
+    print(tables['mangle']['PREROUTING'].walk(tables, pkt))
+    print(tables['nat']['PREROUTING'].walk(tables, pkt))
     return 0
 
 sys.exit(main())
