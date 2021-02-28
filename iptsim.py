@@ -99,13 +99,25 @@ class rule:
 
 class rule_snat(rule):
     def act(self, pkt: packet):
+        print(f'SNAT to {self.to_source}')
         pkt.s = self.to_source
         pkt.__init__() # reinit cache
 
 class rule_dnat(rule):
     def act(self, pkt: packet):
+        print(f'DNAT to {self.to_destination}')
         pkt.d = self.to_destination
-        pkt.__init__() # reinit cache    
+        pkt.__init__() # reinit cache
+
+
+def buld_rule(rawline: str, parsedline, lineno: int) -> rule:
+    rulestable = {
+        'SNAT': rule_snat,
+        'DNAT': rule_dnat
+    }
+    if parsedline.j in rulestable:
+        return rulestable[parsedline.j](rawline, parsedline, lineno)
+    return rule(rawline, parsedline, lineno)
 
 class chain:
     def __init__(self, table, name, action):
@@ -134,7 +146,7 @@ class chain:
         if t in {'ACCEPT', 'REJECT', 'DROP', 'MASQUERADE', 'TCPMSS', None}:
             return t
         print(f'recursing into {self.table}.{t}')
-        return tables[self.table][t]._walk(tables, pkt)
+        return tables[self.table][t].walk(tables, pkt)
     
     def walk(self, tables, pkt) -> str:
         r = self._walk(tables, pkt)
@@ -163,6 +175,7 @@ def parse_rules(filename):
                 continue
             if line[0] == '-':  # new rule in chain
                 words = shlex.split(line)
+                # TODO: move to rules factory with special cases
                 rulespec = rule(line, lp.parse_args(words), lineno)
                 tables[table][rulespec.A].add_rule(rulespec)
                 continue
