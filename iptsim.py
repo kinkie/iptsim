@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
 help="""
 Trace how an user-supplied packet traverses an iptables ruleset
@@ -179,7 +179,7 @@ def parse_rules(filename):
                 rulespec = rule(line, lp.parse_args(words), lineno)
                 tables[table][rulespec.A].add_rule(rulespec)
                 continue
-    pprint.pprint(tables)
+#    pprint.pprint(tables)
     return tables
 
         
@@ -189,8 +189,9 @@ def main():
     args = parser.parse_args()
     tables = parse_rules(args.file)
     pkt = packet(args)
-    print("**** match **** ")
+    print(f'src: {args.src}')
     print(f'myip: {args.myip}')
+    print("**** match **** ")
     # locally-originated packet
     if args.myip and len(args.myip) and pkt.src in args.myip:
         print(tables['mangle']['OUTPUT'].walk(tables, pkt))
